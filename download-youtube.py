@@ -10,6 +10,18 @@ app = FastAPI()
 # Path to cookies file (will be created from environment variable)
 COOKIES_FILE = os.path.join(os.getcwd(), 'youtube_cookies.txt')
 
+# Create cookies file from environment variable on startup
+@app.on_event("startup")
+async def startup_event():
+    cookies_content = os.environ.get('YOUTUBE_COOKIES')
+    if cookies_content:
+        try:
+            with open(COOKIES_FILE, 'w') as f:
+                f.write(cookies_content)
+            print(f"✓ Cookies file created at {COOKIES_FILE}")
+        except Exception as e:
+            print(f"✗ Failed to create cookies file: {e}")
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint to verify service is running"""
@@ -41,14 +53,7 @@ async def health_check():
 async def list_formats(url: str):
     """Debug endpoint to list available formats for a video"""
     try:
-        # Check if cookies are available from environment variable
-        cookies_content = os.environ.get('YOUTUBE_COOKIES')
-        cookies_env_exists = bool(cookies_content)
         cookies_file_exists = os.path.exists(COOKIES_FILE)
-
-        if cookies_content and not os.path.exists(COOKIES_FILE):
-            with open(COOKIES_FILE, 'w') as f:
-                f.write(cookies_content)
 
         ydl_opts = {
             'quiet': False,  # Enable output to see what's happening
@@ -68,7 +73,6 @@ async def list_formats(url: str):
 
             return {
                 "debug": {
-                    "cookies_env_exists": cookies_env_exists,
                     "cookies_file_exists": cookies_file_exists,
                     "cookies_file_path": COOKIES_FILE,
                 },
@@ -333,13 +337,6 @@ async def download_video(url: str, resolution: str = "1080p"):
         # Create downloads directory if it doesn't exist
         downloads_dir = os.path.join(os.getcwd(), 'downloads')
         os.makedirs(downloads_dir, exist_ok=True)
-
-        # Check if cookies are available from environment variable
-        cookies_content = os.environ.get('YOUTUBE_COOKIES')
-        if cookies_content and not os.path.exists(COOKIES_FILE):
-            # Write cookies to file if provided via environment variable
-            with open(COOKIES_FILE, 'w') as f:
-                f.write(cookies_content)
 
         # Generate unique filename to avoid conflicts
         unique_id = str(uuid.uuid4())[:8]
