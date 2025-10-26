@@ -1,0 +1,9 @@
+venv/
+downloads/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.DS_Store
+*.mp4
+*.webm
