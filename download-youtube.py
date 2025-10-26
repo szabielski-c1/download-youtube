@@ -283,11 +283,19 @@ async def download_video(url: str, resolution: str = "1080p"):
             ],
             'quiet': True,
             'no_warnings': True,
-            # Use Android client to bypass bot detection while still getting high quality
+            # Use multiple strategies to bypass bot detection and get high quality
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ios', 'android'],
+                    'player_skip': ['configs'],
                 }
+            },
+            # Add user agent to look more legitimate
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
             },
         }
 
