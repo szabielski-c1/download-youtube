@@ -25,16 +25,19 @@ async def list_formats(url: str):
     try:
         # Check if cookies are available from environment variable
         cookies_content = os.environ.get('YOUTUBE_COOKIES')
+        cookies_env_exists = bool(cookies_content)
+        cookies_file_exists = os.path.exists(COOKIES_FILE)
+
         if cookies_content and not os.path.exists(COOKIES_FILE):
             with open(COOKIES_FILE, 'w') as f:
                 f.write(cookies_content)
 
         ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,  # Enable output to see what's happening
+            'verbose': True,  # More debugging info
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['web', 'android_embedded'],
+                    'player_client': ['web'],
                 }
             },
         }
@@ -44,26 +47,21 @@ async def list_formats(url: str):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            formats = []
-            for f in info.get('formats', []):
-                formats.append({
-                    'format_id': f.get('format_id'),
-                    'ext': f.get('ext'),
-                    'resolution': f.get('resolution'),
-                    'height': f.get('height'),
-                    'width': f.get('width'),
-                    'vcodec': f.get('vcodec'),
-                    'acodec': f.get('acodec'),
-                    'filesize': f.get('filesize'),
-                })
 
             return {
+                "debug": {
+                    "cookies_env_exists": cookies_env_exists,
+                    "cookies_file_exists": cookies_file_exists,
+                    "cookies_file_path": COOKIES_FILE,
+                },
                 "title": info.get('title'),
-                "formats": formats
+                "format_count": len(info.get('formats', [])),
+                "sample_formats": info.get('formats', [])[:5] if info.get('formats') else []
             }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        import traceback
+        raise HTTPException(status_code=400, detail=f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}")
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
