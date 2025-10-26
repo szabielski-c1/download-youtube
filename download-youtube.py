@@ -344,35 +344,18 @@ async def download_video(url: str, resolution: str = "1080p"):
         # Convert resolution format (e.g., "1080p" -> "1080")
         height = resolution.replace('p', '')
 
-        # Don't specify format at all - let yt-dlp use default selection
+        # Minimal yt-dlp configuration
         ydl_opts = {
             'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            'postprocessor_args': [
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-crf', '23',
-                '-preset', 'fast',
-            ],
             'quiet': True,
             'no_warnings': True,
-            # Try multiple client types in order of reliability
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web', 'android_embedded'],
-                }
-            },
-            # Disable signature verification which can trigger bot detection
-            'extractor_retries': 3,
-            'fragment_retries': 3,
         }
 
         # Add cookies if available
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
+        else:
+            raise HTTPException(status_code=500, detail="Cookies file not found. Please configure YOUTUBE_COOKIES environment variable.")
 
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
