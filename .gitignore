@@ -7,3 +7,5 @@ __pycache__/
 .DS_Store
 *.mp4
 *.webm
+youtube_cookies.txt
+cookies.txt

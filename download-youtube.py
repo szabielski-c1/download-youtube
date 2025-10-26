@@ -7,6 +7,9 @@ from pathlib import Path
 
 app = FastAPI()
 
+# Path to cookies file (will be created from environment variable)
+COOKIES_FILE = os.path.join(os.getcwd(), 'youtube_cookies.txt')
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
@@ -260,6 +263,13 @@ async def download_video(url: str, resolution: str = "1080p"):
         downloads_dir = os.path.join(os.getcwd(), 'downloads')
         os.makedirs(downloads_dir, exist_ok=True)
 
+        # Check if cookies are available from environment variable
+        cookies_content = os.environ.get('YOUTUBE_COOKIES')
+        if cookies_content and not os.path.exists(COOKIES_FILE):
+            # Write cookies to file if provided via environment variable
+            with open(COOKIES_FILE, 'w') as f:
+                f.write(cookies_content)
+
         # Generate unique filename to avoid conflicts
         unique_id = str(uuid.uuid4())[:8]
 
@@ -286,13 +296,17 @@ async def download_video(url: str, resolution: str = "1080p"):
             # Try multiple client types in order of reliability
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mediaconnect', 'mweb', 'android_embedded'],
+                    'player_client': ['web', 'android_embedded'],
                 }
             },
             # Disable signature verification which can trigger bot detection
             'extractor_retries': 3,
             'fragment_retries': 3,
         }
+
+        # Add cookies if available
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
 
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

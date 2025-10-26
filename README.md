@@ -287,8 +287,46 @@ The application is configured for Railway deployment with:
 
 ### Environment Variables
 
-No additional environment variables are required for basic operation. Railway automatically provides:
+**Required for Railway deployment to bypass YouTube bot detection:**
+
+- `YOUTUBE_COOKIES` - YouTube cookies in Netscape format (see below for how to export)
+
+Railway automatically provides:
 - `PORT` - The port your application should listen on
+
+### Exporting YouTube Cookies (Required for Railway)
+
+YouTube aggressively blocks downloads from datacenter IPs. To bypass this, you need to provide cookies from a logged-in YouTube session.
+
+**Using a Browser Extension (Recommended):**
+
+1. Install a cookie export extension:
+   - Chrome/Edge: [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+   - Firefox: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
+
+2. Go to [youtube.com](https://youtube.com) and make sure you're logged in
+
+3. Click the extension icon and export cookies for `youtube.com`
+
+4. Copy the entire contents of the exported cookies file
+
+5. In Railway dashboard:
+   - Go to your project → Variables
+   - Add new variable: `YOUTUBE_COOKIES`
+   - Paste the entire cookie content as the value
+   - Deploy/restart the service
+
+**Cookie Format Example:**
+```
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	1234567890	cookie_name	cookie_value
+...
+```
+
+**Important Notes:**
+- Cookies expire after some time (usually weeks/months) - you'll need to refresh them periodically
+- Keep your cookies private - they give access to your YouTube account
+- For local development, cookies are not required (residential IPs work fine)
 
 ## Tech Stack
 
