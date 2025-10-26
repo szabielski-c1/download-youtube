@@ -283,12 +283,15 @@ async def download_video(url: str, resolution: str = "1080p"):
             ],
             'quiet': True,
             'no_warnings': True,
-            # Use android_embedded and tv_embedded clients - they bypass bot detection AND support high quality
+            # Try multiple client types in order of reliability
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android_embedded', 'android_creator'],
+                    'player_client': ['mediaconnect', 'mweb', 'android_embedded'],
                 }
             },
+            # Disable signature verification which can trigger bot detection
+            'extractor_retries': 3,
+            'fragment_retries': 3,
         }
 
         # Download the video
