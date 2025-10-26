@@ -283,6 +283,13 @@ async def download_video(url: str, resolution: str = "1080p"):
             ],
             'quiet': True,
             'no_warnings': True,
+            # Use Android client to bypass bot detection
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'skip': ['dash', 'hls'],
+                }
+            },
         }
 
         # Download the video

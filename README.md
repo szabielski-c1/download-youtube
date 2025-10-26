@@ -256,6 +256,8 @@ FastAPI provides interactive API documentation:
 - Download time varies based on video size and internet speed
 - Videos with video-only or audio-only streams will be automatically merged
 - Some videos may require conversion to H.264, which adds processing time
+- The API uses the Android client player to bypass YouTube's bot detection
+- Age-restricted or region-locked videos may not be available for download
 
 ## Error Handling
 
@@ -264,6 +266,7 @@ Common errors:
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `Video is not available` | Video is private, deleted, or age-restricted | Check the URL and video availability |
+| `Sign in to confirm you're not a bot` | YouTube bot detection | The API uses Android client to bypass this. If it persists, try a different video or wait a few minutes |
 | `Invalid URL` | Malformed YouTube URL | Ensure the URL is a valid YouTube link |
 | `Error downloading video` | Network or permission issues | Check internet connection and disk space |
 
