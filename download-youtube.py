@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 import yt_dlp
 import os
+import uuid
+from pathlib import Path
 
 app = FastAPI()
 
@@ -223,7 +225,13 @@ async def home():
 
                     if (response.ok) {
                         message.className = 'message success';
-                        message.textContent = data.message;
+                        message.innerHTML = `
+                            ${data.message}<br>
+                            <a href="${data.download_url}" download="${data.filename}"
+                               style="color: #155724; font-weight: bold; text-decoration: underline; margin-top: 10px; display: inline-block;">
+                                Click here to download ${data.filename}
+                            </a>
+                        `;
                         message.style.display = 'block';
                         form.reset();
                         document.getElementById('resolution').value = '1080p';
@@ -252,13 +260,16 @@ async def download_video(url: str, resolution: str = "1080p"):
         downloads_dir = os.path.join(os.getcwd(), 'downloads')
         os.makedirs(downloads_dir, exist_ok=True)
 
+        # Generate unique filename to avoid conflicts
+        unique_id = str(uuid.uuid4())[:8]
+
         # Convert resolution format (e.g., "1080p" -> "1080")
         height = resolution.replace('p', '')
 
         # Configure yt-dlp options
         ydl_opts = {
             'format': f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best',
-            'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
             'merge_output_format': 'mp4',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
@@ -280,9 +291,44 @@ async def download_video(url: str, resolution: str = "1080p"):
             title = info.get('title', 'video')
             actual_height = info.get('height', 'unknown')
 
-        return {"message": f"Video '{title}' downloaded successfully to downloads/ folder in {actual_height}p!"}
+            # Get the actual downloaded filename
+            downloaded_file = ydl.prepare_filename(info)
+            # Handle potential format conversion
+            if not os.path.exists(downloaded_file):
+                downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
+
+            filename = os.path.basename(downloaded_file)
+
+        # Generate download URL
+        download_url = f"/files/{filename}"
+
+        return {
+            "message": f"Video '{title}' downloaded successfully in {actual_height}p!",
+            "title": title,
+            "resolution": f"{actual_height}p",
+            "download_url": download_url,
+            "filename": filename
+        }
 
     except yt_dlp.utils.DownloadError as e:
         raise HTTPException(status_code=400, detail=f"Error: Video is not available or cannot be downloaded - {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=400, detail="Error downloading video: " + str(e))
+
+@app.get("/files/{filename}")
+async def get_file(filename: str):
+    """Serve downloaded video files"""
+    file_path = os.path.join(os.getcwd(), 'downloads', filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Security: Ensure the file is within the downloads directory
+    if not os.path.abspath(file_path).startswith(os.path.abspath(os.path.join(os.getcwd(), 'downloads'))):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return FileResponse(
+        path=file_path,
+        media_type='video/mp4',
+        filename=filename
+    )

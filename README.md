@@ -8,15 +8,29 @@ A simple FastAPI-based web service for downloading YouTube videos in MP4 format 
 - Configurable resolution (defaults to 1080p)
 - Automatic conversion to H.264/MP4 for maximum compatibility
 - Videos saved to organized `downloads/` folder
+- One-click deployment to Railway
 
-## Installation
+## Quick Start
 
-### Requirements
+### Deploy to Railway
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new)
+
+1. Click the "Deploy on Railway" button above
+2. Connect your GitHub account and select this repository
+3. Railway will automatically detect and deploy the application
+4. Once deployed, Railway will provide your public URL
+
+**Live Demo:** [https://download-youtube-production-f849.up.railway.app](https://download-youtube-production-f849.up.railway.app)
+
+### Local Development
+
+#### Requirements
 
 - Python 3.13+
 - FFmpeg (for video conversion)
 
-### Setup
+#### Setup
 
 1. Install dependencies:
 ```bash
@@ -32,11 +46,17 @@ The server will run on `http://127.0.0.1:8000`
 
 ## Usage
 
+> **Note:** Replace `http://127.0.0.1:8000` with your Railway deployment URL when using the deployed version.
+
 ### Web Interface
 
 Open your browser and navigate to:
 ```
+# Local development
 http://127.0.0.1:8000
+
+# Railway deployment
+https://download-youtube-production-f849.up.railway.app
 ```
 
 Use the form to:
@@ -57,14 +77,27 @@ Use the form to:
 
 **Example Request:**
 ```bash
+# Local development
 curl "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=1080p"
+
+# Railway deployment
+curl "https://download-youtube-production-f849.up.railway.app/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=1080p"
 ```
 
 **Success Response:**
 ```json
 {
-  "message": "Video 'Rick Astley - Never Gonna Give You Up' downloaded successfully to downloads/ folder in 1080p!"
+  "message": "Video 'Rick Astley - Never Gonna Give You Up' downloaded successfully in 1080p!",
+  "title": "Rick Astley - Never Gonna Give You Up",
+  "resolution": "1080p",
+  "download_url": "/files/a1b2c3d4_Rick Astley - Never Gonna Give You Up.mp4",
+  "filename": "a1b2c3d4_Rick Astley - Never Gonna Give You Up.mp4"
 }
+```
+
+The `download_url` is a relative path. To download the file, make a GET request to:
+```
+https://download-youtube-production-f849.up.railway.app/files/{filename}
 ```
 
 **Error Response:**
@@ -79,9 +112,13 @@ curl "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9W
 ```python
 import requests
 
-# Download a video in 720p
+# Set your API base URL
+BASE_URL = "http://127.0.0.1:8000"  # Local development
+# BASE_URL = "https://download-youtube-production-f849.up.railway.app"  # Railway deployment
+
+# Step 1: Request video download
 response = requests.get(
-    "http://127.0.0.1:8000/download",
+    f"{BASE_URL}/download",
     params={
         "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "resolution": "720p"
@@ -89,7 +126,18 @@ response = requests.get(
 )
 
 if response.status_code == 200:
-    print(response.json()["message"])
+    data = response.json()
+    print(data["message"])
+
+    # Step 2: Download the video file
+    download_url = f"{BASE_URL}{data['download_url']}"
+    filename = data['filename']
+
+    video_response = requests.get(download_url)
+    with open(filename, 'wb') as f:
+        f.write(video_response.content)
+
+    print(f"Video saved as: {filename}")
 else:
     print(f"Error: {response.json()['detail']}")
 ```
@@ -97,15 +145,30 @@ else:
 ### JavaScript Example
 
 ```javascript
+// Set your API base URL
+const BASE_URL = 'http://127.0.0.1:8000';  // Local development
+// const BASE_URL = 'https://download-youtube-production-f849.up.railway.app';  // Railway deployment
+
 async function downloadVideo(url, resolution = '1080p') {
+    // Step 1: Request video download
     const response = await fetch(
-        `http://127.0.0.1:8000/download?url=${encodeURIComponent(url)}&resolution=${resolution}`
+        `${BASE_URL}/download?url=${encodeURIComponent(url)}&resolution=${resolution}`
     );
 
     const data = await response.json();
 
     if (response.ok) {
         console.log(data.message);
+        console.log('Download URL:', `${BASE_URL}${data.download_url}`);
+
+        // Step 2: Trigger browser download
+        const downloadUrl = `${BASE_URL}${data.download_url}`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = data.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     } else {
         console.error(data.detail);
     }
@@ -117,27 +180,53 @@ downloadVideo('https://www.youtube.com/watch?v=dQw4w9WgXcQ', '720p');
 
 ### cURL Examples
 
-**Download in default 1080p:**
+**Step 1: Request video download and get download URL**
 ```bash
-curl "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-```
-
-**Download in 720p:**
-```bash
+# Local
 curl "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=720p"
+
+# Railway
+curl "https://download-youtube-production-f849.up.railway.app/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=720p"
 ```
 
-**Download in 4K:**
+**Step 2: Download the video file using the returned download_url**
 ```bash
-curl "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=2160p"
+# Railway example (replace {filename} with actual filename from response)
+curl -O "https://download-youtube-production-f849.up.railway.app/files/{filename}"
 ```
+
+**Complete example with jq (JSON processor):**
+```bash
+# Get the video info and extract download URL
+RESPONSE=$(curl -s "https://download-youtube-production-f849.up.railway.app/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&resolution=720p")
+DOWNLOAD_URL=$(echo $RESPONSE | jq -r '.download_url')
+FILENAME=$(echo $RESPONSE | jq -r '.filename')
+
+# Download the actual video file
+curl -o "$FILENAME" "https://download-youtube-production-f849.up.railway.app${DOWNLOAD_URL}"
+echo "Downloaded: $FILENAME"
+```
+
+## API Endpoints
+
+### `GET /download`
+Initiates a video download and returns the download URL.
+
+**Returns:** JSON with video information and download URL
+
+### `GET /files/{filename}`
+Serves the downloaded video file.
+
+**Returns:** MP4 video file
 
 ## Output
 
-All downloaded videos are saved to the `downloads/` folder in your project directory with the format:
+All downloaded videos are saved to the `downloads/` folder with the format:
 ```
-downloads/[Video Title].mp4
+downloads/[unique_id]_[Video Title].mp4
 ```
+
+Each file has a unique ID prefix to prevent filename conflicts.
 
 ## Video Format
 
@@ -153,8 +242,13 @@ This ensures maximum compatibility across all devices and players.
 
 FastAPI provides interactive API documentation:
 
+**Local Development:**
 - **Swagger UI:** http://127.0.0.1:8000/docs
 - **ReDoc:** http://127.0.0.1:8000/redoc
+
+**Railway Deployment:**
+- **Swagger UI:** https://download-youtube-production-f849.up.railway.app/docs
+- **ReDoc:** https://download-youtube-production-f849.up.railway.app/redoc
 
 ## Notes
 
@@ -173,12 +267,33 @@ Common errors:
 | `Invalid URL` | Malformed YouTube URL | Ensure the URL is a valid YouTube link |
 | `Error downloading video` | Network or permission issues | Check internet connection and disk space |
 
+## Deployment Configuration
+
+The application is configured for Railway deployment with:
+
+- **Port binding:** Automatically uses Railway's `$PORT` environment variable
+- **Host configuration:** Binds to `0.0.0.0` for external access
+- **Restart policy:** Automatically restarts on failure (up to 10 retries)
+- **Build system:** Uses Nixpacks for automatic Python environment setup
+
+### Railway Configuration Files
+
+- `railway.json` - Deployment configuration
+- `Procfile` - Process start command
+- `requirements.txt` - Python dependencies
+
+### Environment Variables
+
+No additional environment variables are required for basic operation. Railway automatically provides:
+- `PORT` - The port your application should listen on
+
 ## Tech Stack
 
 - **FastAPI** - Modern Python web framework
 - **yt-dlp** - Robust YouTube downloader
 - **FFmpeg** - Video conversion and processing
 - **Uvicorn** - ASGI server
+- **Railway** - Deployment platform
 
 ## License
 
