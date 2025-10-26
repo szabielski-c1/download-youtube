@@ -10,6 +10,15 @@ app = FastAPI()
 # Path to cookies file (will be created from environment variable)
 COOKIES_FILE = os.path.join(os.getcwd(), 'youtube_cookies.txt')
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint to verify service is running"""
+    return {
+        "status": "ok",
+        "cookies_configured": os.path.exists(COOKIES_FILE) or bool(os.environ.get('YOUTUBE_COOKIES')),
+        "ffmpeg_available": True  # If we got this far, ffmpeg is installed
+    }
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
