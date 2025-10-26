@@ -13,10 +13,28 @@ COOKIES_FILE = os.path.join(os.getcwd(), 'youtube_cookies.txt')
 @app.get("/health")
 async def health_check():
     """Health check endpoint to verify service is running"""
+    cookies_env = os.environ.get('YOUTUBE_COOKIES', '')
+    cookies_file_exists = os.path.exists(COOKIES_FILE)
+
+    # Try to read cookies file if it exists
+    cookies_file_preview = ""
+    if cookies_file_exists:
+        try:
+            with open(COOKIES_FILE, 'r') as f:
+                content = f.read()
+                # Show first 200 chars to verify format
+                cookies_file_preview = content[:200] + "..." if len(content) > 200 else content
+        except Exception as e:
+            cookies_file_preview = f"Error reading file: {str(e)}"
+
     return {
         "status": "ok",
-        "cookies_configured": os.path.exists(COOKIES_FILE) or bool(os.environ.get('YOUTUBE_COOKIES')),
-        "ffmpeg_available": True  # If we got this far, ffmpeg is installed
+        "cookies_env_exists": bool(cookies_env),
+        "cookies_env_length": len(cookies_env) if cookies_env else 0,
+        "cookies_env_preview": cookies_env[:100] + "..." if len(cookies_env) > 100 else cookies_env,
+        "cookies_file_exists": cookies_file_exists,
+        "cookies_file_preview": cookies_file_preview,
+        "ffmpeg_available": True
     }
 
 @app.get("/formats")
