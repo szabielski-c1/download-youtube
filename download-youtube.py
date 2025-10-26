@@ -285,12 +285,16 @@ async def download_video(url: str, resolution: str = "1080p"):
         # Convert resolution format (e.g., "1080p" -> "1080")
         height = resolution.replace('p', '')
 
-        # Configure yt-dlp options with very flexible format selection
-        # Use best available up to requested height, with automatic fallbacks
+        # Configure yt-dlp options with smart format selection
+        # Try best video+audio combo, fall back to single file
+        format_string = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]'
+
         ydl_opts = {
-            'format': f'bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b',
+            'format': format_string,
             'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
             'merge_output_format': 'mp4',
+            'allow_multiple_video_streams': False,
+            'allow_multiple_audio_streams': False,
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
