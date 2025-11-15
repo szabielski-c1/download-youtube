@@ -7,6 +7,9 @@ from pathlib import Path
 
 app = FastAPI()
 
+# Get proxy URL from environment variable if set
+PROXY_URL = os.getenv('PROXY_URL')
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
@@ -284,6 +287,10 @@ async def download_video(url: str, resolution: str = "1080p"):
             'quiet': True,
             'no_warnings': True,
         }
+
+        # Add proxy if configured
+        if PROXY_URL:
+            ydl_opts['proxy'] = PROXY_URL
 
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
