@@ -14,6 +14,7 @@ app = FastAPI()
 
 # Get proxy URL from environment variable if set
 PROXY_URL = os.getenv('PROXY_URL')
+print(f"[Startup] PROXY_URL configured: {bool(PROXY_URL)}")
 
 # Concurrency control
 MAX_CONCURRENT_DOWNLOADS = 5
@@ -347,6 +348,9 @@ async def download_worker(job_id: str):
 
             if PROXY_URL:
                 ydl_opts['proxy'] = PROXY_URL
+                print(f"[Download] Using proxy for job {job_id}")
+            else:
+                print(f"[Download] WARNING: No proxy configured for job {job_id}")
 
             # Run yt-dlp in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
