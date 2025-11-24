@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
 import yt_dlp
@@ -7,6 +7,7 @@ import os
 import uuid
 import asyncio
 import httpx
+import json
 from datetime import datetime
 from enum import Enum
 
@@ -39,11 +40,17 @@ class Job(BaseModel):
     status: JobStatus
     url: str
     resolution: str
-    webhook_url: str
+    webhook_url: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
     result: Optional[dict] = None
     error: Optional[str] = None
+    # Progress tracking
+    progress_percent: float = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    speed: Optional[str] = None
+    eta: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -357,37 +364,83 @@ async def download_worker(job_id: str):
 
             # Run yt-dlp in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: _sync_download(ydl_opts, job.url))
+            result = await loop.run_in_executor(None, lambda: _sync_download(ydl_opts, job.url, job))
 
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now()
             job.result = result
 
-            # Send webhook
-            await send_webhook(job.webhook_url, {
-                "job_id": job_id,
-                "status": "completed",
-                "title": result["title"],
-                "resolution": result["resolution"],
-                "download_url": result["download_url"],
-                "filename": result["filename"]
-            })
+            # Send webhook if configured
+            if job.webhook_url:
+                await send_webhook(job.webhook_url, {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "title": result["title"],
+                    "resolution": result["resolution"],
+                    "download_url": result["download_url"],
+                    "filename": result["filename"]
+                })
 
         except Exception as e:
             job.status = JobStatus.FAILED
             job.completed_at = datetime.now()
             job.error = str(e)
 
-            # Send failure webhook
-            await send_webhook(job.webhook_url, {
-                "job_id": job_id,
-                "status": "failed",
-                "error": str(e)
-            })
+            # Send failure webhook if configured
+            if job.webhook_url:
+                await send_webhook(job.webhook_url, {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": str(e)
+                })
 
-def _sync_download(ydl_opts: dict, url: str) -> dict:
+def _sync_download(ydl_opts: dict, url: str, job: Job = None) -> dict:
     """Synchronous download function to run in executor"""
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+    def progress_hook(d):
+        """Update job progress from yt-dlp callback"""
+        if job is None:
+            return
+
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+
+            job.downloaded_bytes = downloaded
+            job.total_bytes = total
+
+            if total > 0:
+                job.progress_percent = (downloaded / total) * 100
+
+            # Format speed
+            speed = d.get('speed')
+            if speed:
+                if speed >= 1024 * 1024:
+                    job.speed = f"{speed / (1024 * 1024):.1f} MB/s"
+                elif speed >= 1024:
+                    job.speed = f"{speed / 1024:.1f} KB/s"
+                else:
+                    job.speed = f"{speed:.0f} B/s"
+
+            # Format ETA
+            eta = d.get('eta')
+            if eta:
+                if eta >= 3600:
+                    job.eta = f"{eta // 3600}h {(eta % 3600) // 60}m"
+                elif eta >= 60:
+                    job.eta = f"{eta // 60}m {eta % 60}s"
+                else:
+                    job.eta = f"{eta}s"
+
+        elif d['status'] == 'finished':
+            job.progress_percent = 100
+            job.eta = "Processing..."
+
+    # Add progress hook to options
+    ydl_opts_with_hook = ydl_opts.copy()
+    ydl_opts_with_hook['progress_hooks'] = [progress_hook]
+
+    with yt_dlp.YoutubeDL(ydl_opts_with_hook) as ydl:
         info = ydl.extract_info(url, download=True)
         title = info.get('title', 'video')
         actual_height = info.get('height', 'unknown')
@@ -404,6 +457,10 @@ def _sync_download(ydl_opts: dict, url: str) -> dict:
             "download_url": f"/files/{filename}",
             "filename": filename
         }
+
+class DownloadRequestNoWebhook(BaseModel):
+    url: str
+    resolution: str = "1080p"
 
 # New async endpoint with webhook support
 @app.post("/download")
@@ -430,6 +487,32 @@ async def queue_download(request: DownloadRequest, background_tasks: BackgroundT
         "message": "Download queued. Results will be sent to your webhook URL."
     }
 
+# Async endpoint without webhook - use SSE for progress
+@app.post("/download/async")
+async def queue_download_async(request: DownloadRequestNoWebhook, background_tasks: BackgroundTasks):
+    """Queue a video download and track progress via SSE at /jobs/{job_id}/progress"""
+    job_id = str(uuid.uuid4())
+
+    job = Job(
+        job_id=job_id,
+        status=JobStatus.QUEUED,
+        url=request.url,
+        resolution=request.resolution,
+        webhook_url=None,
+        created_at=datetime.now()
+    )
+    jobs[job_id] = job
+
+    # Start background download
+    background_tasks.add_task(download_worker, job_id)
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "progress_url": f"/jobs/{job_id}/progress",
+        "message": "Download queued. Stream progress via SSE at the progress_url."
+    }
+
 # Job status endpoint
 @app.get("/jobs/{job_id}")
 async def get_job_status(job_id: str):
@@ -446,8 +529,66 @@ async def get_job_status(job_id: str):
         "created_at": job.created_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "result": job.result,
-        "error": job.error
+        "error": job.error,
+        "progress_percent": job.progress_percent,
+        "downloaded_bytes": job.downloaded_bytes,
+        "total_bytes": job.total_bytes,
+        "speed": job.speed,
+        "eta": job.eta
     }
+
+# SSE Progress endpoint
+@app.get("/jobs/{job_id}/progress")
+async def stream_job_progress(job_id: str):
+    """Stream download progress via Server-Sent Events"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        last_progress = -1
+        while True:
+            if job_id not in jobs:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                break
+
+            job = jobs[job_id]
+            current_progress = job.progress_percent
+
+            # Send update if progress changed or status changed
+            if current_progress != last_progress or job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+                event_data = {
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress_percent": round(job.progress_percent, 1),
+                    "downloaded_bytes": job.downloaded_bytes,
+                    "total_bytes": job.total_bytes,
+                    "speed": job.speed,
+                    "eta": job.eta
+                }
+
+                if job.status == JobStatus.COMPLETED:
+                    event_data["result"] = job.result
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    break
+                elif job.status == JobStatus.FAILED:
+                    event_data["error"] = job.error
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    break
+
+                yield f"data: {json.dumps(event_data)}\n\n"
+                last_progress = current_progress
+
+            await asyncio.sleep(0.5)  # Check every 500ms
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 # Keep original sync endpoint for backwards compatibility
 @app.get("/download")
