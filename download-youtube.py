@@ -344,6 +344,9 @@ async def download_worker(job_id: str):
                 ],
                 'quiet': True,
                 'no_warnings': True,
+                'retries': 5,
+                'fragment_retries': 5,
+                'retry_sleep_functions': {'http': lambda n: 2 ** n},
             }
 
             if PROXY_URL:
