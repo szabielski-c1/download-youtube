@@ -1,14 +1,48 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
+from pydantic import BaseModel, HttpUrl
+from typing import Optional
 import yt_dlp
 import os
 import uuid
-from pathlib import Path
+import asyncio
+import httpx
+from datetime import datetime
+from enum import Enum
 
 app = FastAPI()
 
 # Get proxy URL from environment variable if set
 PROXY_URL = os.getenv('PROXY_URL')
+
+# Concurrency control
+MAX_CONCURRENT_DOWNLOADS = 5
+download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+
+# Job storage (in-memory - consider Redis for production)
+jobs = {}
+
+class JobStatus(str, Enum):
+    QUEUED = "queued"
+    DOWNLOADING = "downloading"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class DownloadRequest(BaseModel):
+    url: str
+    resolution: str = "1080p"
+    webhook_url: HttpUrl
+
+class Job(BaseModel):
+    job_id: str
+    status: JobStatus
+    url: str
+    resolution: str
+    webhook_url: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -256,6 +290,159 @@ async def home():
     </html>
     """
 
+# Webhook delivery with retry logic
+async def send_webhook(webhook_url: str, payload: dict, max_retries: int = 3):
+    """Send webhook with exponential backoff retry"""
+    async with httpx.AsyncClient() as client:
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=30.0
+                )
+                if response.status_code < 400:
+                    return True
+            except Exception as e:
+                pass
+
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+
+    return False
+
+# Background download worker
+async def download_worker(job_id: str):
+    """Process download in background with concurrency limiting"""
+    job = jobs[job_id]
+
+    async with download_semaphore:
+        job.status = JobStatus.DOWNLOADING
+
+        try:
+            # Create downloads directory if it doesn't exist
+            downloads_dir = os.path.join(os.getcwd(), 'downloads')
+            os.makedirs(downloads_dir, exist_ok=True)
+
+            unique_id = str(uuid.uuid4())[:8]
+            height = job.resolution.replace('p', '')
+
+            ydl_opts = {
+                'format': f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best',
+                'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
+                'merge_output_format': 'mp4',
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }],
+                'postprocessor_args': [
+                    '-c:v', 'libx264',
+                    '-c:a', 'aac',
+                    '-crf', '23',
+                    '-preset', 'fast',
+                ],
+                'quiet': True,
+                'no_warnings': True,
+            }
+
+            if PROXY_URL:
+                ydl_opts['proxy'] = PROXY_URL
+
+            # Run yt-dlp in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: _sync_download(ydl_opts, job.url))
+
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.now()
+            job.result = result
+
+            # Send webhook
+            await send_webhook(job.webhook_url, {
+                "job_id": job_id,
+                "status": "completed",
+                "title": result["title"],
+                "resolution": result["resolution"],
+                "download_url": result["download_url"],
+                "filename": result["filename"]
+            })
+
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now()
+            job.error = str(e)
+
+            # Send failure webhook
+            await send_webhook(job.webhook_url, {
+                "job_id": job_id,
+                "status": "failed",
+                "error": str(e)
+            })
+
+def _sync_download(ydl_opts: dict, url: str) -> dict:
+    """Synchronous download function to run in executor"""
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get('title', 'video')
+        actual_height = info.get('height', 'unknown')
+
+        downloaded_file = ydl.prepare_filename(info)
+        if not os.path.exists(downloaded_file):
+            downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
+
+        filename = os.path.basename(downloaded_file)
+
+        return {
+            "title": title,
+            "resolution": f"{actual_height}p",
+            "download_url": f"/files/{filename}",
+            "filename": filename
+        }
+
+# New async endpoint with webhook support
+@app.post("/download")
+async def queue_download(request: DownloadRequest, background_tasks: BackgroundTasks):
+    """Queue a video download and receive results via webhook"""
+    job_id = str(uuid.uuid4())
+
+    job = Job(
+        job_id=job_id,
+        status=JobStatus.QUEUED,
+        url=request.url,
+        resolution=request.resolution,
+        webhook_url=str(request.webhook_url),
+        created_at=datetime.now()
+    )
+    jobs[job_id] = job
+
+    # Start background download
+    background_tasks.add_task(download_worker, job_id)
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Download queued. Results will be sent to your webhook URL."
+    }
+
+# Job status endpoint
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """Check the status of a download job"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs[job_id]
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "url": job.url,
+        "resolution": job.resolution,
+        "created_at": job.created_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "result": job.result,
+        "error": job.error
+    }
+
+# Keep original sync endpoint for backwards compatibility
 @app.get("/download")
 async def download_video(url: str, resolution: str = "1080p"):
     try:
