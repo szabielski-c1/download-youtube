@@ -11,6 +11,7 @@ import httpx
 import json
 from datetime import datetime
 from enum import Enum
+import time
 
 app = FastAPI()
 
@@ -361,9 +362,8 @@ async def download_worker(job_id: str):
                 ],
                 'quiet': True,
                 'no_warnings': True,
-                'retries': 5,
-                'fragment_retries': 5,
-                'retry_sleep_functions': {'http': lambda n: 2 ** n},
+                'retries': 1,           # Reduced - we handle retries at app level with proxy rotation
+                'fragment_retries': 2,  # Keep some for fragment issues
             }
 
             if PROXY_URL:
@@ -404,8 +404,8 @@ async def download_worker(job_id: str):
                     "error": str(e)
                 })
 
-def _sync_download(ydl_opts: dict, url: str, job: Job = None) -> dict:
-    """Synchronous download function to run in executor"""
+def _sync_download(ydl_opts: dict, url: str, job: Job = None, max_proxy_retries: int = 5) -> dict:
+    """Synchronous download function with proxy rotation retry on 403 errors"""
 
     def progress_hook(d):
         """Update job progress from yt-dlp callback"""
@@ -450,23 +450,42 @@ def _sync_download(ydl_opts: dict, url: str, job: Job = None) -> dict:
     ydl_opts_with_hook = ydl_opts.copy()
     ydl_opts_with_hook['progress_hooks'] = [progress_hook]
 
-    with yt_dlp.YoutubeDL(ydl_opts_with_hook) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = info.get('title', 'video')
-        actual_height = info.get('height', 'unknown')
+    last_error = None
 
-        downloaded_file = ydl.prepare_filename(info)
-        if not os.path.exists(downloaded_file):
-            downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
+    for attempt in range(max_proxy_retries):
+        try:
+            # Create fresh yt-dlp instance each attempt (new connection = new ProxyJet IP)
+            with yt_dlp.YoutubeDL(ydl_opts_with_hook) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', 'video')
+                actual_height = info.get('height', 'unknown')
 
-        filename = os.path.basename(downloaded_file)
+                downloaded_file = ydl.prepare_filename(info)
+                if not os.path.exists(downloaded_file):
+                    downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
 
-        return {
-            "title": title,
-            "resolution": f"{actual_height}p",
-            "download_url": f"/files/{filename}",
-            "filename": filename
-        }
+                filename = os.path.basename(downloaded_file)
+
+                return {
+                    "title": title,
+                    "resolution": f"{actual_height}p",
+                    "download_url": f"/files/{filename}",
+                    "filename": filename
+                }
+
+        except yt_dlp.utils.DownloadError as e:
+            error_str = str(e).lower()
+            if '403' in error_str or 'forbidden' in error_str:
+                last_error = e
+                print(f"[Download] 403 error on attempt {attempt + 1}/{max_proxy_retries}, rotating proxy...")
+                if attempt < max_proxy_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s, 8s
+                continue  # Retry with new yt-dlp instance
+            else:
+                raise  # Non-403 errors fail immediately
+
+    # All retries exhausted
+    raise last_error or Exception("Download failed after all proxy rotation attempts")
 
 class DownloadRequestNoWebhook(BaseModel):
     url: str
@@ -637,30 +656,54 @@ async def download_video(url: str, resolution: str = "1080p"):
         if PROXY_URL:
             ydl_opts['proxy'] = PROXY_URL
 
-        # Download the video
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'video')
-            actual_height = info.get('height', 'unknown')
+        # Add reduced retries - we handle proxy rotation at app level
+        ydl_opts['retries'] = 1
+        ydl_opts['fragment_retries'] = 2
 
-            # Get the actual downloaded filename
-            downloaded_file = ydl.prepare_filename(info)
-            # Handle potential format conversion
-            if not os.path.exists(downloaded_file):
-                downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
+        # Download with proxy rotation retry on 403 errors
+        max_proxy_retries = 5
+        last_error = None
 
-            filename = os.path.basename(downloaded_file)
+        for attempt in range(max_proxy_retries):
+            try:
+                # Create fresh yt-dlp instance each attempt (new connection = new ProxyJet IP)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    title = info.get('title', 'video')
+                    actual_height = info.get('height', 'unknown')
 
-        # Generate download URL
-        download_url = f"/files/{filename}"
+                    # Get the actual downloaded filename
+                    downloaded_file = ydl.prepare_filename(info)
+                    # Handle potential format conversion
+                    if not os.path.exists(downloaded_file):
+                        downloaded_file = os.path.splitext(downloaded_file)[0] + '.mp4'
 
-        return {
-            "message": f"Video '{title}' downloaded successfully in {actual_height}p!",
-            "title": title,
-            "resolution": f"{actual_height}p",
-            "download_url": download_url,
-            "filename": filename
-        }
+                    filename = os.path.basename(downloaded_file)
+
+                # Generate download URL
+                download_url = f"/files/{filename}"
+
+                return {
+                    "message": f"Video '{title}' downloaded successfully in {actual_height}p!",
+                    "title": title,
+                    "resolution": f"{actual_height}p",
+                    "download_url": download_url,
+                    "filename": filename
+                }
+
+            except yt_dlp.utils.DownloadError as e:
+                error_str = str(e).lower()
+                if '403' in error_str or 'forbidden' in error_str:
+                    last_error = e
+                    print(f"[Download] 403 error on attempt {attempt + 1}/{max_proxy_retries}, rotating proxy...")
+                    if attempt < max_proxy_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s, 8s
+                    continue  # Retry with new yt-dlp instance
+                else:
+                    raise  # Non-403 errors fail immediately
+
+        # All retries exhausted
+        raise last_error or Exception("Download failed after all proxy rotation attempts")
 
     except yt_dlp.utils.DownloadError as e:
         raise HTTPException(status_code=400, detail=f"Error: Video is not available or cannot be downloaded - {str(e)}")
