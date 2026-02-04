@@ -364,6 +364,8 @@ async def download_worker(job_id: str):
                 'no_warnings': True,
                 'retries': 1,           # Reduced - we handle retries at app level with proxy rotation
                 'fragment_retries': 2,  # Keep some for fragment issues
+                'js_runtimes': {'node': {}},
+                'remote_components': {'ejs:github': {}},
             }
 
             if PROXY_URL:
@@ -650,6 +652,8 @@ async def download_video(url: str, resolution: str = "1080p"):
             ],
             'quiet': True,
             'no_warnings': True,
+            'js_runtimes': {'node': {}},
+            'remote_components': {'ejs:github': {}},
         }
 
         # Add proxy if configured

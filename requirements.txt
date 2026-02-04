@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
-yt-dlp
+yt-dlp>=2026.2.4
 httpx
