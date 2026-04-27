@@ -35,6 +35,52 @@ download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 # Job storage (in-memory - consider Redis for production)
 jobs = {}
 
+# How long to retain a job record (and its downloaded file) after the job
+# reaches a terminal state. Long enough for the client to download the file
+# and for SSE/polling to drain; short enough that nothing piles up on disk.
+JOB_RETENTION_SECONDS = 1800  # 30 minutes
+
+
+def _delete_download_file(filename: str):
+    file_path = os.path.join(os.getcwd(), 'downloads', filename)
+    try:
+        os.remove(file_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[Cleanup] Failed to delete {file_path}: {e}")
+
+
+async def _delete_file_later(filename: str, delay: float = JOB_RETENTION_SECONDS):
+    await asyncio.sleep(delay)
+    _delete_download_file(filename)
+
+
+@app.on_event("startup")
+def _purge_downloads_on_startup():
+    downloads_dir = os.path.join(os.getcwd(), 'downloads')
+    if not os.path.isdir(downloads_dir):
+        return
+    removed = 0
+    for entry in os.listdir(downloads_dir):
+        path = os.path.join(downloads_dir, entry)
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+        except OSError as e:
+            print(f"[Startup] Failed to delete {path}: {e}")
+    print(f"[Startup] Purged {removed} stale file(s) from {downloads_dir}")
+
+
+async def _cleanup_job_later(job_id: str, delay: float = JOB_RETENTION_SECONDS):
+    await asyncio.sleep(delay)
+    job = jobs.pop(job_id, None)
+    if job and job.result:
+        filename = job.result.get("filename")
+        if filename:
+            _delete_download_file(filename)
+
 class JobStatus(str, Enum):
     QUEUED = "queued"
     DOWNLOADING = "downloading"
@@ -406,6 +452,9 @@ async def download_worker(job_id: str):
                     "error": str(e)
                 })
 
+        finally:
+            asyncio.create_task(_cleanup_job_later(job_id))
+
 def _sync_download(ydl_opts: dict, url: str, job: Job = None, max_proxy_retries: int = 5) -> dict:
     """Synchronous download function with proxy rotation retry on 403 errors"""
 
@@ -686,6 +735,9 @@ async def download_video(url: str, resolution: str = "1080p"):
 
                 # Generate download URL
                 download_url = f"/files/{filename}"
+
+                # Schedule file deletion so disk doesn't grow unbounded.
+                asyncio.create_task(_delete_file_later(filename))
 
                 return {
                     "message": f"Video '{title}' downloaded successfully in {actual_height}p!",
