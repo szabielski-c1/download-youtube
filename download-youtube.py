@@ -432,17 +432,18 @@ async def download_worker(job_id: str):
             ydl_opts = {
                 'format': f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best',
                 'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
+                # Just remux the (already-H.264/AAC) streams into an mp4 container.
+                # The format selector prefers AVC video + m4a audio, so a stream COPY
+                # is all that's needed — NO re-encode. (Previously this forced
+                # -c:v libx264 -crf 23, which transcoded every 1080p video: slow and
+                # CPU-heavy, especially on the Mac mini, and needlessly lossy.)
                 'merge_output_format': 'mp4',
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }],
-                'postprocessor_args': [
-                    '-c:v', 'libx264',
-                    '-c:a', 'aac',
-                    '-crf', '23',
-                    '-preset', 'fast',
-                ],
+                'postprocessor_args': {
+                    # Applied to the ffmpeg merge step: copy both streams, fast-start
+                    # for progressive playback. If a source stream isn't mp4-compatible,
+                    # yt-dlp/ffmpeg still remuxes into mp4 via merge_output_format.
+                    'merger': ['-c', 'copy', '-movflags', '+faststart'],
+                },
                 'quiet': True,
                 'no_warnings': True,
                 'retries': 1,           # Reduced - we handle retries at app level with proxy rotation
