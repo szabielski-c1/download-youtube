@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
@@ -9,6 +9,7 @@ import uuid
 import asyncio
 import httpx
 import json
+import hmac
 from datetime import datetime
 from enum import Enum
 import time
@@ -23,6 +24,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Shared-secret auth -----------------------------------------------------
+# When this service is exposed publicly (e.g. via Tailscale Funnel), every
+# request must carry the shared secret in the X-Download-Auth header. The secret
+# lives ONLY in the Billboard server's env (which is the sole caller); the
+# browser never talks to this service directly (it goes browser -> Billboard
+# server -> here). Requests without the correct secret get 401, so a random
+# person who discovers the funnel URL cannot trigger downloads through our IP.
+#
+# Paths that are safe to leave open (no secret): the "/" info page and health.
+# If DOWNLOAD_AUTH_TOKEN is unset, auth is DISABLED (fail-open) — that keeps
+# local dev / an un-exposed deployment usable, but any public deployment MUST
+# set the token.
+DOWNLOAD_AUTH_TOKEN = os.getenv('DOWNLOAD_AUTH_TOKEN')
+AUTH_EXEMPT_PATHS = {'/', '/health', '/favicon.ico'}
+print(f"[Startup] DOWNLOAD_AUTH_TOKEN configured: {bool(DOWNLOAD_AUTH_TOKEN)}"
+      + ("" if DOWNLOAD_AUTH_TOKEN else "  (AUTH DISABLED — do NOT expose publicly without a token)"))
+
+
+@app.middleware("http")
+async def require_shared_secret(request: Request, call_next):
+    # CORS preflight must pass through untouched.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if DOWNLOAD_AUTH_TOKEN and request.url.path not in AUTH_EXEMPT_PATHS:
+        provided = request.headers.get('x-download-auth', '')
+        # Constant-time compare to avoid timing leaks.
+        if not hmac.compare_digest(provided, DOWNLOAD_AUTH_TOKEN):
+            return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    return await call_next(request)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 
 # Get proxy URL from environment variable if set
 PROXY_URL = os.getenv('PROXY_URL')
