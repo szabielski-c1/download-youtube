@@ -7,3 +7,9 @@ __pycache__/
 .DS_Store
 *.mp4
 *.webm
+
+# local secret (never commit)
+.secrets/
+
+# local backups
+*.bak-*

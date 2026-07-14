@@ -77,6 +77,11 @@ jobs = {}
 # and for SSE/polling to drain; short enough that nothing piles up on disk.
 JOB_RETENTION_SECONDS = 1800  # 30 minutes
 
+# Hard wall-clock cap on a single download. Beyond this the download is assumed
+# wedged (hung socket read that never raised) and the job is force-failed so the
+# client stops polling. Generous enough for large 1080p videos on a slow link.
+JOB_MAX_SECONDS = 900  # 15 minutes
+
 
 def _delete_download_file(filename: str):
     file_path = os.path.join(os.getcwd(), 'downloads', filename)
@@ -448,6 +453,10 @@ async def download_worker(job_id: str):
                 'no_warnings': True,
                 'retries': 1,           # Reduced - we handle retries at app level with proxy rotation
                 'fragment_retries': 2,  # Keep some for fragment issues
+                # Cap individual socket reads so a hung connection to YouTube raises
+                # [Errno 60]-style timeouts instead of blocking the worker thread
+                # forever (which left jobs wedged in "downloading" with no webhook).
+                'socket_timeout': 30,
                 'js_runtimes': {'node': {}},
                 'remote_components': {'ejs:github': {}},
             }
@@ -458,9 +467,18 @@ async def download_worker(job_id: str):
             else:
                 print(f"[Download] WARNING: No proxy configured for job {job_id}")
 
-            # Run yt-dlp in thread pool to avoid blocking
+            # Run yt-dlp in thread pool to avoid blocking. Wrap in a wall-clock
+            # timeout so a wedged download (thread stuck in a hung read that never
+            # raises) can't leave the job pinned at "downloading" indefinitely.
+            # On timeout, asyncio.TimeoutError falls through to the except below:
+            # the job is marked FAILED and the failure webhook fires, so the client
+            # stops polling forever. (The orphaned worker thread may linger, but the
+            # semaphore is released when this coroutine unwinds.)
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: _sync_download(ydl_opts, job.url, job))
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: _sync_download(ydl_opts, job.url, job)),
+                timeout=JOB_MAX_SECONDS,
+            )
 
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now()
@@ -475,6 +493,19 @@ async def download_worker(job_id: str):
                     "resolution": result["resolution"],
                     "download_url": result["download_url"],
                     "filename": result["filename"]
+                })
+
+        except asyncio.TimeoutError:
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now()
+            job.error = f"Download timed out after {JOB_MAX_SECONDS}s (connection to YouTube stalled)"
+            print(f"[Download] Job {job_id} force-failed: exceeded {JOB_MAX_SECONDS}s wall-clock cap")
+
+            if job.webhook_url:
+                await send_webhook(job.webhook_url, {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": job.error
                 })
 
         except Exception as e:
