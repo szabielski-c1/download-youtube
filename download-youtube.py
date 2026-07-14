@@ -437,6 +437,12 @@ async def download_worker(job_id: str):
             ydl_opts = {
                 'format': f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best',
                 'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
+                # Download ONLY the single video, never the surrounding playlist.
+                # YouTube "watch" URLs often carry &list=... (a real playlist, or an
+                # RD... radio/autoplay list). Without this, yt-dlp downloads every
+                # item in the list back-to-back — the client sees the progress bar
+                # loop 0->100% then restart on the next track, effectively forever.
+                'noplaylist': True,
                 # Just remux the (already-H.264/AAC) streams into an mp4 container.
                 # The format selector prefers AVC video + m4a audio, so a stream COPY
                 # is all that's needed — NO re-encode. (Previously this forced
@@ -757,6 +763,8 @@ async def download_video(url: str, resolution: str = "1080p"):
         ydl_opts = {
             'format': f'bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best',
             'outtmpl': os.path.join(downloads_dir, f'{unique_id}_%(title)s.%(ext)s'),
+            # Only the single video, never the surrounding &list=... playlist/radio.
+            'noplaylist': True,
             'merge_output_format': 'mp4',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
